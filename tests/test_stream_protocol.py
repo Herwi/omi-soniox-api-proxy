@@ -41,11 +41,12 @@ def _install_server_import_stubs() -> None:
 
     fastapi_responses = types.ModuleType("fastapi.responses")
 
-    class _JSONResponse:
-        def __init__(self, content):
+    class _PlainTextResponse:
+        def __init__(self, content, media_type=None):
             self.content = content
+            self.media_type = media_type
 
-    fastapi_responses.JSONResponse = _JSONResponse  # type: ignore[attr-defined]
+    fastapi_responses.PlainTextResponse = _PlainTextResponse  # type: ignore[attr-defined]
     sys.modules.setdefault("fastapi.responses", fastapi_responses)
 
     websockets = types.ModuleType("websockets")
@@ -129,6 +130,12 @@ class _FakeSonioxWebSocket:
 
 
 class StreamProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._old_message_limit = server.MAX_MESSAGE_BYTES
+
+    def tearDown(self) -> None:
+        server.MAX_MESSAGE_BYTES = self._old_message_limit
+
     async def test_close_stream_sends_finalize_and_eof(self) -> None:
         omi_ws = _FakeOmiWebSocket([
             {"type": "websocket.receive", "text": json.dumps({"type": "CloseStream"})}
@@ -234,6 +241,28 @@ class StreamProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
             server.asyncio.sleep = old_sleep
 
         self.assertIn(json.dumps({"type": "keepalive"}), soniox_ws.sent)
+
+    async def test_oversized_message_closes_stream_without_forwarding(self) -> None:
+        server.MAX_MESSAGE_BYTES = 4
+        omi_ws = _FakeOmiWebSocket([{"type": "websocket.receive", "bytes": b"12345"}])
+        soniox_ws = _FakeSonioxWebSocket([])
+
+        old_connect = server.connect_to_soniox
+        try:
+            async def _connect_stub():
+                return soniox_ws
+
+            server.connect_to_soniox = _connect_stub
+            await server.stream_proxy(omi_ws)
+        finally:
+            server.connect_to_soniox = old_connect
+
+        self.assertEqual(soniox_ws.sent, [])
+
+    def test_metrics_endpoint_is_prometheus_compatible(self) -> None:
+        content = server.metrics.render()
+        self.assertIn("soniox_connection_attempts_total", content)
+        self.assertIn("transcript_segments_sent_total", content)
 
 
 if __name__ == "__main__":

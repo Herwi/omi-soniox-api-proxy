@@ -23,12 +23,15 @@ The proxy accepts Omi audio on `/stream`, forwards frames to Soniox, aggregates 
 
 - FastAPI WebSocket endpoint at `GET /stream` (WS upgrade).
 - Health endpoint at `GET /health`.
+- Prometheus-compatible metrics endpoint at `GET /metrics`.
 - Soniox session bootstrap with multilingual hints (`en`, `pl`).
 - Token aggregation into Omi `{"segments": [...]}` schema.
 - Segment boundaries based on `<end>` token and speaker changes.
 - Omi `CloseStream` handling (`finalize` + empty frame to Soniox).
 - Keepalive to Soniox after configurable silence interval (`SONIOX_KEEPALIVE_INTERVAL_SECONDS`, default `10`, max `20`).
 - Soniox connection retries (1s / 2s / 4s, max 3 attempts).
+- Structured JSON logs that include per-session IDs.
+- Operational safeguards for global concurrency, payload size, and idle session timeouts.
 
 ## Prerequisites
 
@@ -58,6 +61,12 @@ Health check:
 curl http://localhost:8080/health
 ```
 
+Prometheus metrics:
+
+```bash
+curl http://localhost:8080/metrics
+```
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -70,6 +79,9 @@ curl http://localhost:8080/health
 | `AUDIO_PASSTHROUGH` | ❌ | `true` | `true` sends raw input with Soniox `audio_format=auto`; `false` uses PCM config (`pcm_s16le`, 16kHz mono). |
 | `OMI_AUDIO_INPUT_FORMAT` | ❌ | `webm` | Input format hint for ffmpeg when `AUDIO_PASSTHROUGH=false` (examples: `webm`, `ogg`, `opus`). |
 | `SONIOX_KEEPALIVE_INTERVAL_SECONDS` | ❌ | `10` | Interval for keepalive frames during silence. Values above `20` are clamped to satisfy Soniox real-time API limits. |
+| `MAX_MESSAGE_BYTES` | ❌ | `1048576` | Per-message size guard for incoming Omi binary frames. Oversized frames terminate the session. |
+| `MAX_IDLE_SECONDS` | ❌ | `120` | Per-connection idle timeout for inbound Omi messages. Idle sessions are terminated. |
+| `MAX_CONCURRENT_STREAMS` | ❌ | `100` | Global cap on simultaneously active `/stream` sessions. Sessions over the cap are rejected. |
 
 > Note: `AUDIO_PASSTHROUGH=false` requires `ffmpeg` in `PATH`. Incoming Omi audio is transcoded to 16kHz mono PCM (`pcm_s16le`) before forwarding to Soniox.
 

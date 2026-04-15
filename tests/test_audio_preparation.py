@@ -40,11 +40,12 @@ def _install_server_import_stubs() -> None:
 
     fastapi_responses = types.ModuleType("fastapi.responses")
 
-    class _JSONResponse:
-        def __init__(self, content):
+    class _PlainTextResponse:
+        def __init__(self, content, media_type=None):
             self.content = content
+            self.media_type = media_type
 
-    fastapi_responses.JSONResponse = _JSONResponse  # type: ignore[attr-defined]
+    fastapi_responses.PlainTextResponse = _PlainTextResponse  # type: ignore[attr-defined]
     sys.modules.setdefault("fastapi.responses", fastapi_responses)
 
     websockets = types.ModuleType("websockets")
