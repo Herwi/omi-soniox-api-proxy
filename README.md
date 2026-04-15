@@ -27,7 +27,7 @@ The proxy accepts Omi audio on `/stream`, forwards frames to Soniox, aggregates 
 - Token aggregation into Omi `{"segments": [...]}` schema.
 - Segment boundaries based on `<end>` token and speaker changes.
 - Omi `CloseStream` handling (`finalize` + empty frame to Soniox).
-- Keepalive to Soniox after 30s of silence.
+- Keepalive to Soniox after configurable silence interval (`SONIOX_KEEPALIVE_INTERVAL_SECONDS`, default `10`, max `20`).
 - Soniox connection retries (1s / 2s / 4s, max 3 attempts).
 
 ## Prerequisites
@@ -143,7 +143,7 @@ Example outbound payload to Omi:
 
 ## Testing
 
-Unit tests for token aggregation logic:
+Unit and protocol-level async bridge tests:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
