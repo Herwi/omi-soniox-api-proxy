@@ -68,9 +68,10 @@ curl http://localhost:8080/health
 | `SONIOX_MODEL` | ❌ | `stt-rt-v4` | Soniox model; fallback can be `stt-rt-v3`. |
 | `SONIOX_LANGUAGE_HINTS` | ❌ | `en,pl` | Comma-separated language hints. |
 | `AUDIO_PASSTHROUGH` | ❌ | `true` | `true` sends raw input with Soniox `audio_format=auto`; `false` uses PCM config (`pcm_s16le`, 16kHz mono). |
+| `OMI_AUDIO_INPUT_FORMAT` | ❌ | `webm` | Input format hint for ffmpeg when `AUDIO_PASSTHROUGH=false` (examples: `webm`, `ogg`, `opus`). |
 | `SONIOX_KEEPALIVE_INTERVAL_SECONDS` | ❌ | `10` | Interval for keepalive frames during silence. Values above `20` are clamped to satisfy Soniox real-time API limits. |
 
-> Note: `AUDIO_PASSTHROUGH=false` currently changes Soniox config only. It does **not** decode Opus to PCM yet.
+> Note: `AUDIO_PASSTHROUGH=false` requires `ffmpeg` in `PATH`. Incoming Omi audio is transcoded to 16kHz mono PCM (`pcm_s16le`) before forwarding to Soniox.
 
 ## Implementation status and remaining TODO
 

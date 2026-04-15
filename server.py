@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import time
 from typing import Any
 
@@ -29,8 +30,56 @@ SONIOX_LANGUAGE_HINTS = [
     hint.strip() for hint in os.getenv("SONIOX_LANGUAGE_HINTS", "en,pl").split(",") if hint.strip()
 ]
 AUDIO_PASSTHROUGH = os.getenv("AUDIO_PASSTHROUGH", "true").lower() == "true"
+OMI_AUDIO_INPUT_FORMAT = os.getenv("OMI_AUDIO_INPUT_FORMAT", "webm")
 MAX_CONNECT_RETRIES = 3
 MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS = 20
+
+
+class AudioTranscoder:
+    def __init__(self, input_format: str) -> None:
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path is None:
+            raise RuntimeError(
+                "AUDIO_PASSTHROUGH=false requires ffmpeg in PATH to decode Omi audio to PCM"
+            )
+        self._input_format = input_format
+        self._ffmpeg_path = ffmpeg_path
+
+    async def transcode_chunk(self, payload: bytes) -> bytes:
+        process = await asyncio.create_subprocess_exec(
+            self._ffmpeg_path,
+            "-loglevel",
+            "error",
+            "-f",
+            self._input_format,
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate(input=payload)
+        if process.returncode != 0:
+            error_text = stderr.decode("utf-8", errors="ignore").strip()
+            logger.warning(
+                "Dropping audio frame: ffmpeg failed to transcode chunk (%s)",
+                error_text or f"exit code {process.returncode}",
+            )
+            return b""
+        return stdout
+
+
+transcoder: AudioTranscoder | None = None
+if not AUDIO_PASSTHROUGH:
+    transcoder = AudioTranscoder(OMI_AUDIO_INPUT_FORMAT)
 
 
 def _resolve_keepalive_interval_seconds() -> int:
@@ -106,6 +155,13 @@ async def _send_segments_to_omi(omi_ws: WebSocket, segments: list[dict[str, Any]
     await omi_ws.send_json({"segments": segments})
 
 
+async def _prepare_audio_for_soniox(payload: bytes) -> bytes:
+    if AUDIO_PASSTHROUGH:
+        return payload
+    assert transcoder is not None
+    return await transcoder.transcode_chunk(payload)
+
+
 app = FastAPI(title="Omi ↔ Soniox Real-Time STT Proxy")
 
 
@@ -145,7 +201,12 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
                 if len(payload) <= 2:
                     # Omi heartbeat ping, do not forward as audio.
                     continue
-                await soniox_ws.send(payload)
+
+                prepared_payload = await _prepare_audio_for_soniox(payload)
+                if not prepared_payload:
+                    continue
+
+                await soniox_ws.send(prepared_payload)
                 last_audio_ts = time.monotonic()
             elif "text" in message and message["text"] is not None:
                 raw = message["text"]
