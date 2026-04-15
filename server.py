@@ -29,8 +29,41 @@ SONIOX_LANGUAGE_HINTS = [
     hint.strip() for hint in os.getenv("SONIOX_LANGUAGE_HINTS", "en,pl").split(",") if hint.strip()
 ]
 AUDIO_PASSTHROUGH = os.getenv("AUDIO_PASSTHROUGH", "true").lower() == "true"
-KEEPALIVE_INTERVAL_SECONDS = 30
 MAX_CONNECT_RETRIES = 3
+MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS = 20
+
+
+def _resolve_keepalive_interval_seconds() -> int:
+    raw_value = os.getenv("SONIOX_KEEPALIVE_INTERVAL_SECONDS", "10")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid SONIOX_KEEPALIVE_INTERVAL_SECONDS=%r, defaulting to 10",
+            raw_value,
+        )
+        return 10
+
+    if parsed <= 0:
+        logger.warning(
+            "Non-positive SONIOX_KEEPALIVE_INTERVAL_SECONDS=%s, defaulting to 10",
+            parsed,
+        )
+        return 10
+    if parsed > MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS:
+        logger.warning(
+            (
+                "SONIOX_KEEPALIVE_INTERVAL_SECONDS=%s exceeds Soniox limit; "
+                "clamping to %s"
+            ),
+            parsed,
+            MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS,
+        )
+        return MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS
+    return parsed
+
+
+KEEPALIVE_INTERVAL_SECONDS = _resolve_keepalive_interval_seconds()
 
 
 async def connect_to_soniox() -> ClientConnection:

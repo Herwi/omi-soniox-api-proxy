@@ -68,8 +68,13 @@ curl http://localhost:8080/health
 | `SONIOX_MODEL` | ❌ | `stt-rt-v4` | Soniox model; fallback can be `stt-rt-v3`. |
 | `SONIOX_LANGUAGE_HINTS` | ❌ | `en,pl` | Comma-separated language hints. |
 | `AUDIO_PASSTHROUGH` | ❌ | `true` | `true` sends raw input with Soniox `audio_format=auto`; `false` uses PCM config (`pcm_s16le`, 16kHz mono). |
+| `SONIOX_KEEPALIVE_INTERVAL_SECONDS` | ❌ | `10` | Interval for keepalive frames during silence. Values above `20` are clamped to satisfy Soniox real-time API limits. |
 
 > Note: `AUDIO_PASSTHROUGH=false` currently changes Soniox config only. It does **not** decode Opus to PCM yet.
+
+## Implementation status and remaining TODO
+
+See [`TODO_REVIEW.md`](TODO_REVIEW.md) for a prioritized review of planned work that is still pending.
 
 ## Running with Docker
 
