@@ -38,34 +38,7 @@ The proxy accepts Omi audio on `/stream`, forwards frames to Soniox, aggregates 
 - Python **3.12+**
 - A **Soniox API key**
 - (Optional) Docker / Docker Compose
-
-## Local Development
-
-1. Create and activate a virtual environment.
-2. Install dependencies.
-3. Configure environment variables.
-4. Run the server.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# edit .env and set SONIOX_API_KEY
-uvicorn server:app --host 0.0.0.0 --port 8080 --reload
-```
-
-Health check:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Prometheus metrics:
-
-```bash
-curl http://localhost:8080/metrics
-```
+- `ffmpeg` installed if you plan to set `AUDIO_PASSTHROUGH=false`
 
 ## Environment Variables
 
@@ -83,22 +56,48 @@ curl http://localhost:8080/metrics
 | `MAX_IDLE_SECONDS` | ❌ | `120` | Per-connection idle timeout for inbound Omi messages. Idle sessions are terminated. |
 | `MAX_CONCURRENT_STREAMS` | ❌ | `100` | Global cap on simultaneously active `/stream` sessions. Sessions over the cap are rejected. |
 
-> Note: `AUDIO_PASSTHROUGH=false` requires `ffmpeg` in `PATH`. Incoming Omi audio is transcoded to 16kHz mono PCM (`pcm_s16le`) before forwarding to Soniox.
+## Audio compatibility matrix
 
-## Implementation status and remaining TODO
+| Omi audio input | `AUDIO_PASSTHROUGH` | Proxy behavior | When to use |
+|---|---|---|---|
+| Compressed/containerized input (common Omi default, e.g. `webm`/`ogg`/`opus`) | `true` (default) | Forwards bytes as-is; Soniox auto-detects format. | Use first for lowest proxy CPU and simplest setup. |
+| Compressed/containerized input that Soniox does not decode reliably | `false` | Decodes with ffmpeg and forwards 16kHz mono PCM (`pcm_s16le`). | Use when you see decode/format errors or unstable transcript quality. |
+| Already-linear PCM stream from upstream | `true` | Forwards bytes as-is. | Use if your upstream already emits Soniox-compatible PCM. |
+| Already-linear PCM stream from upstream | `false` | Re-encodes through ffmpeg to 16kHz mono PCM. | Usually unnecessary; only use to normalize inconsistent upstream audio. |
 
-See [`TODO_REVIEW.md`](TODO_REVIEW.md) for a prioritized review of planned work that is still pending.
+## Local setup
 
-## Running with Docker
+1. Create and activate a virtual environment.
+2. Install dependencies.
+3. Configure environment variables.
+4. Run the server.
 
-Build and run:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# edit .env and set SONIOX_API_KEY
+uvicorn server:app --host 0.0.0.0 --port 8080 --reload
+```
+
+Quick checks:
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/metrics
+```
+
+## Docker setup
+
+Build and run directly:
 
 ```bash
 docker build -t omi-soniox-proxy .
 docker run --rm -p 8080:8080 --env-file .env omi-soniox-proxy
 ```
 
-With Compose:
+Run with Docker Compose:
 
 ```bash
 cp .env.example .env
@@ -106,52 +105,31 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-`docker-compose.yml` passes `SONIOX_API_KEY` (and other runtime variables) into the container through the `environment` section, so your VPS only needs a populated `.env` file (or exported shell variables) before `docker compose up`.
+`docker-compose.yml` passes `SONIOX_API_KEY` and the rest of runtime variables into the container via its `environment` section.
 
-## Deploying
+## Local and Docker operations runbook
 
-### Render
+### Healthcheck behavior
 
-1. Create a new **Web Service** from this repository.
-2. Runtime: Docker.
-3. Set environment variables (`SONIOX_API_KEY`, optional overrides).
-4. Expose port `8080`.
+- `GET /health` returns `200` with `{"ok": true}` when the app process is running.
+- This endpoint checks process liveness, not external Soniox reachability.
+- Use `/metrics` for runtime counters and debugging context.
 
-### Fly.io
+### Restart/backoff strategy
 
-1. `fly launch` in this repo.
-2. Set secrets: `fly secrets set SONIOX_API_KEY=...`.
-3. Ensure internal port is `8080`.
-4. `fly deploy`.
+- The proxy already retries Soniox session connect attempts with `1s`, `2s`, then `4s` backoff.
+- For process-level resilience:
+  - local supervisor: `restart=on-failure`
+  - Docker/Compose: `restart: unless-stopped` (or `always` in dedicated appliance setups)
+- Keep `MAX_IDLE_SECONDS` and `MAX_CONCURRENT_STREAMS` set to sane values for your host capacity.
 
-## Configure Omi
+### Useful log patterns
 
-In Omi custom STT backend settings, point your WebSocket URL to:
+Look for these JSON log categories while diagnosing:
 
-```text
-wss://<your-domain>/stream
-```
-
-Expected behavior:
-
-- Omi sends binary audio frames.
-- Proxy forwards to Soniox.
-- Proxy returns Omi-formatted JSON objects with a `segments` key.
-
-Example outbound payload to Omi:
-
-```json
-{
-  "segments": [
-    {
-      "text": "Hello, how are you?",
-      "speaker": "SPEAKER_00",
-      "start": 0.0,
-      "end": 1.5
-    }
-  ]
-}
-```
+- session lifecycle (accepted/rejected/closed with session IDs)
+- Soniox connection attempts/failures
+- stream termination reasons (oversized frame, idle timeout, upstream close)
 
 ## Testing
 
