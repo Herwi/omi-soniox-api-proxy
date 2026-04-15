@@ -81,13 +81,15 @@ server = importlib.import_module("server")
 
 
 class _FakeOmiWebSocket:
-    def __init__(self, incoming_messages: list[dict]):
+    def __init__(self, incoming_messages: list[dict], headers: dict[str, str] | None = None):
         self._incoming = server.asyncio.Queue()
         for message in incoming_messages:
             self._incoming.put_nowait(message)
         self.sent_json: list[dict] = []
         self.accepted = False
         self.closed = False
+        self.close_code: int | None = None
+        self.headers = headers or {}
 
     async def accept(self) -> None:
         self.accepted = True
@@ -98,8 +100,9 @@ class _FakeOmiWebSocket:
     async def send_json(self, payload: dict) -> None:
         self.sent_json.append(payload)
 
-    async def close(self) -> None:
+    async def close(self, code: int = 1000) -> None:
         self.closed = True
+        self.close_code = code
 
 
 class _FakeSonioxWebSocket:
@@ -132,9 +135,11 @@ class _FakeSonioxWebSocket:
 class StreamProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._old_message_limit = server.MAX_MESSAGE_BYTES
+        self._old_auth_bearer_token = server.AUTH_BEARER_TOKEN
 
     def tearDown(self) -> None:
         server.MAX_MESSAGE_BYTES = self._old_message_limit
+        server.AUTH_BEARER_TOKEN = self._old_auth_bearer_token
 
     async def test_close_stream_sends_finalize_and_eof(self) -> None:
         omi_ws = _FakeOmiWebSocket([
@@ -258,6 +263,38 @@ class StreamProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
             server.connect_to_soniox = old_connect
 
         self.assertEqual(soniox_ws.sent, [])
+
+    async def test_missing_authorization_header_rejects_connection(self) -> None:
+        server.AUTH_BEARER_TOKEN = "super-secret"
+        omi_ws = _FakeOmiWebSocket([])
+
+        await server.stream_proxy(omi_ws)
+
+        self.assertFalse(omi_ws.accepted)
+        self.assertTrue(omi_ws.closed)
+        self.assertEqual(omi_ws.close_code, 1008)
+
+    async def test_valid_authorization_header_accepts_connection(self) -> None:
+        server.AUTH_BEARER_TOKEN = "super-secret"
+        omi_ws = _FakeOmiWebSocket(
+            [
+                {"type": "websocket.receive", "text": json.dumps({"type": "CloseStream"})},
+            ],
+            headers={"authorization": "Bearer super-secret"},
+        )
+        soniox_ws = _FakeSonioxWebSocket([])
+
+        old_connect = server.connect_to_soniox
+        try:
+            async def _connect_stub():
+                return soniox_ws
+
+            server.connect_to_soniox = _connect_stub
+            await server.stream_proxy(omi_ws)
+        finally:
+            server.connect_to_soniox = old_connect
+
+        self.assertTrue(omi_ws.accepted)
 
     def test_metrics_endpoint_is_prometheus_compatible(self) -> None:
         content = server.metrics.render()

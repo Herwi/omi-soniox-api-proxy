@@ -45,6 +45,7 @@ The proxy accepts Omi audio on `/stream`, forwards frames to Soniox, aggregates 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SONIOX_API_KEY` | ✅ | — | Soniox API key used in the start/config message. |
+| `AUTH_BEARER_TOKEN` | ❌ | empty (disabled) | If set, `/stream` requires `Authorization: Bearer <token>` and rejects other clients. |
 | `PORT` | ❌ | `8080` | App listen port (used by your process manager). |
 | `LOG_LEVEL` | ❌ | `info` | Python logging verbosity. |
 | `SONIOX_MODEL` | ❌ | `stt-rt-v4` | Soniox model; fallback can be `stt-rt-v3`. |
@@ -107,6 +108,17 @@ docker compose up --build -d
 
 `docker-compose.yml` passes `SONIOX_API_KEY` and the rest of runtime variables into the container via its `environment` section.
 
+## Securing access to your self-hosted proxy
+
+For private self-hosting, set `AUTH_BEARER_TOKEN` in your environment (or `.env` for Compose).  
+When enabled, every WebSocket request to `/stream` must include:
+
+```text
+Authorization: Bearer <your-token>
+```
+
+Connections without a matching bearer token are rejected by the proxy.
+
 ## Local and Docker operations runbook
 
 ### Healthcheck behavior
@@ -130,6 +142,40 @@ Look for these JSON log categories while diagnosing:
 - session lifecycle (accepted/rejected/closed with session IDs)
 - Soniox connection attempts/failures
 - stream termination reasons (oversized frame, idle timeout, upstream close)
+
+### Connecting Omi to the proxy
+
+Point your Omi device at:
+
+```text
+wss://<your-domain>/stream
+```
+
+If you enabled `AUTH_BEARER_TOKEN`, also configure Omi's custom header fields:
+
+- Header name: `Authorization`
+- Header value: `Bearer <the same token from AUTH_BEARER_TOKEN>`
+
+Expected behavior:
+
+- Omi sends binary audio frames.
+- Proxy forwards to Soniox.
+- Proxy returns Omi-formatted JSON objects with a `segments` key.
+
+Example outbound payload to Omi:
+
+```json
+{
+  "segments": [
+    {
+      "text": "Hello, how are you?",
+      "speaker": "SPEAKER_00",
+      "start": 0.0,
+      "end": 1.5
+    }
+  ]
+}
+```
 
 ## Testing
 

@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import time
 import uuid
@@ -37,6 +38,7 @@ MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS = 20
 MAX_MESSAGE_BYTES = int(os.getenv("MAX_MESSAGE_BYTES", "1048576"))
 MAX_IDLE_SECONDS = int(os.getenv("MAX_IDLE_SECONDS", "120"))
 MAX_CONCURRENT_STREAMS = int(os.getenv("MAX_CONCURRENT_STREAMS", "100"))
+AUTH_BEARER_TOKEN = os.getenv("AUTH_BEARER_TOKEN", "").strip()
 
 _active_stream_semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
 
@@ -47,6 +49,7 @@ class PrometheusMetrics:
         self._soniox_connection_failures = 0
         self._stream_sessions_started = 0
         self._stream_sessions_rejected = 0
+        self._stream_sessions_unauthorized = 0
         self._transcript_segments_sent = 0
         self._soniox_message_latency_seconds_sum = 0.0
         self._soniox_message_latency_seconds_count = 0
@@ -62,6 +65,9 @@ class PrometheusMetrics:
 
     def inc_stream_rejected(self) -> None:
         self._stream_sessions_rejected += 1
+
+    def inc_stream_unauthorized(self) -> None:
+        self._stream_sessions_unauthorized += 1
 
     def inc_segments_sent(self, count: int) -> None:
         self._transcript_segments_sent += count
@@ -85,6 +91,9 @@ class PrometheusMetrics:
                 "# HELP stream_sessions_rejected_total Total stream sessions rejected by safeguards.",
                 "# TYPE stream_sessions_rejected_total counter",
                 f"stream_sessions_rejected_total {self._stream_sessions_rejected}",
+                "# HELP stream_sessions_unauthorized_total Total stream sessions rejected due to auth.",
+                "# TYPE stream_sessions_unauthorized_total counter",
+                f"stream_sessions_unauthorized_total {self._stream_sessions_unauthorized}",
                 "# HELP transcript_segments_sent_total Total transcript segments emitted to Omi.",
                 "# TYPE transcript_segments_sent_total counter",
                 f"transcript_segments_sent_total {self._transcript_segments_sent}",
@@ -246,6 +255,23 @@ async def _prepare_audio_for_soniox(payload: bytes) -> bytes:
     return await transcoder.transcode_chunk(payload)
 
 
+def _is_authorized_stream_request(authorization_header: str | None) -> bool:
+    if not AUTH_BEARER_TOKEN:
+        return True
+    if authorization_header is None:
+        return False
+
+    auth_scheme, _, auth_value = authorization_header.partition(" ")
+    if auth_scheme.lower() != "bearer":
+        return False
+
+    provided_token = auth_value.strip()
+    if not provided_token:
+        return False
+
+    return secrets.compare_digest(provided_token, AUTH_BEARER_TOKEN)
+
+
 app = FastAPI(title="Omi ↔ Soniox Real-Time STT Proxy")
 
 
@@ -262,6 +288,14 @@ async def metrics_endpoint() -> PlainTextResponse:
 @app.websocket("/stream")
 async def stream_proxy(omi_ws: WebSocket) -> None:
     session_id = str(uuid.uuid4())
+
+    authorization_header = omi_ws.headers.get("authorization")
+    if not _is_authorized_stream_request(authorization_header):
+        metrics.inc_stream_unauthorized()
+        _log_event(logging.WARNING, "stream_unauthorized", session_id=session_id)
+        await omi_ws.close(code=1008)
+        return
+
     await omi_ws.accept()
     _log_event(logging.INFO, "omi_client_connected", session_id=session_id)
 
