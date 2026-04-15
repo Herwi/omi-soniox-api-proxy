@@ -46,6 +46,7 @@ The proxy accepts Omi audio on `/stream`, forwards frames to Soniox, aggregates 
 |---|---|---|---|
 | `SONIOX_API_KEY` | ✅ | — | Soniox API key used in the start/config message. |
 | `AUTH_BEARER_TOKEN` | ❌ | empty (disabled) | If set, `/stream` requires `Authorization: Bearer <token>` and rejects other clients. |
+| `HOST` | ❌ | `0.0.0.0` | App bind host when running with `python server.py` (or custom process launcher). |
 | `PORT` | ❌ | `8080` | App listen port (used by your process manager). |
 | `LOG_LEVEL` | ❌ | `info` | Python logging verbosity. |
 | `SONIOX_MODEL` | ❌ | `stt-rt-v4` | Soniox model; fallback can be `stt-rt-v3`. |
@@ -80,6 +81,9 @@ pip install -r requirements.txt
 cp .env.example .env
 # edit .env and set SONIOX_API_KEY
 uvicorn server:app --host 0.0.0.0 --port 8080 --reload
+
+# one-shot run using environment variables only
+python server.py
 ```
 
 Quick checks:

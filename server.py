@@ -35,10 +35,37 @@ AUDIO_PASSTHROUGH = os.getenv("AUDIO_PASSTHROUGH", "true").lower() == "true"
 OMI_AUDIO_INPUT_FORMAT = os.getenv("OMI_AUDIO_INPUT_FORMAT", "webm")
 MAX_CONNECT_RETRIES = 3
 MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS = 20
-MAX_MESSAGE_BYTES = int(os.getenv("MAX_MESSAGE_BYTES", "1048576"))
-MAX_IDLE_SECONDS = int(os.getenv("MAX_IDLE_SECONDS", "120"))
-MAX_CONCURRENT_STREAMS = int(os.getenv("MAX_CONCURRENT_STREAMS", "100"))
 AUTH_BEARER_TOKEN = os.getenv("AUTH_BEARER_TOKEN", "").strip()
+
+
+def _get_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw_value = os.getenv(name, str(default)).strip()
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r, defaulting to %s",
+            name,
+            raw_value,
+            default,
+        )
+        return default
+
+    if minimum is not None and parsed < minimum:
+        logger.warning(
+            "%s=%s is below minimum %s, defaulting to %s",
+            name,
+            parsed,
+            minimum,
+            default,
+        )
+        return default
+    return parsed
+
+
+MAX_MESSAGE_BYTES = _get_int_env("MAX_MESSAGE_BYTES", 1048576, minimum=1)
+MAX_IDLE_SECONDS = _get_int_env("MAX_IDLE_SECONDS", 120, minimum=1)
+MAX_CONCURRENT_STREAMS = _get_int_env("MAX_CONCURRENT_STREAMS", 100, minimum=1)
 
 _active_stream_semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
 
@@ -168,21 +195,8 @@ if not AUDIO_PASSTHROUGH:
 
 
 def _resolve_keepalive_interval_seconds() -> int:
-    raw_value = os.getenv("SONIOX_KEEPALIVE_INTERVAL_SECONDS", "10")
-    try:
-        parsed = int(raw_value)
-    except ValueError:
-        logger.warning(
-            "Invalid SONIOX_KEEPALIVE_INTERVAL_SECONDS=%r, defaulting to 10",
-            raw_value,
-        )
-        return 10
-
-    if parsed <= 0:
-        logger.warning(
-            "Non-positive SONIOX_KEEPALIVE_INTERVAL_SECONDS=%s, defaulting to 10",
-            parsed,
-        )
+    parsed = _get_int_env("SONIOX_KEEPALIVE_INTERVAL_SECONDS", 10, minimum=1)
+    if parsed < 1:
         return 10
     if parsed > MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS:
         logger.warning(
@@ -476,3 +490,11 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
         with contextlib.suppress(Exception):
             await omi_ws.close()
         _log_event(logging.INFO, "proxy_session_closed", session_id=session_id)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = _get_int_env("PORT", 8080, minimum=1)
+    uvicorn.run("server:app", host=host, port=port, log_level=LOG_LEVEL.lower())
