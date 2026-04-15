@@ -8,24 +8,13 @@ This document summarizes what remains unimplemented vs. the current proxy plan a
 - Aggregation now treats both `<end>` and `<fin>` as flush boundaries so manual finalization does not leak control tokens into transcript text.
 - `AUDIO_PASSTHROUGH=false` now decodes Omi audio to 16kHz mono PCM with ffmpeg before forwarding to Soniox.
 - Added protocol-level async bridge tests for `CloseStream` finalize/EOF, `finished=true` trailing flush, Soniox error shutdown payload, and keepalive behavior under silence.
+- Added structured JSON lifecycle/error logs with per-session IDs.
+- Added Prometheus-compatible metrics at `/metrics` (connection attempts/failures, session acceptance/rejection, segment count, Soniox message latency summary).
+- Added operational safeguards for global stream concurrency (`MAX_CONCURRENT_STREAMS`), per-message size (`MAX_MESSAGE_BYTES`), and idle stream timeout (`MAX_IDLE_SECONDS`).
 
 ## Remaining TODO items
 
-### 1) Operational hardening still incomplete
-
-**Current state**
-- Retry logic exists for Soniox connect and basic logging is present.
-- No metrics, no structured request/session correlation, and no rate limiting.
-
-**Impact**
-- Harder production debugging and capacity planning.
-
-**What to implement**
-- Add structured logs with per-session IDs.
-- Add Prometheus-compatible metrics (connection attempts, failures, segment count, latency).
-- Add configurable per-connection and global safeguards (max idle time, max message size).
-
-### 2) Deployment and config docs can be expanded
+### 1) Deployment and config docs can be expanded
 
 **Current state**
 - README includes local/Docker/deploy basics.

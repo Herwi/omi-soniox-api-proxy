@@ -5,12 +5,13 @@ import logging
 import os
 import shutil
 import time
+import uuid
 from typing import Any
 
 from aggregator import TokenAggregator
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import PlainTextResponse
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -33,6 +34,81 @@ AUDIO_PASSTHROUGH = os.getenv("AUDIO_PASSTHROUGH", "true").lower() == "true"
 OMI_AUDIO_INPUT_FORMAT = os.getenv("OMI_AUDIO_INPUT_FORMAT", "webm")
 MAX_CONNECT_RETRIES = 3
 MAX_SONIOX_KEEPALIVE_INTERVAL_SECONDS = 20
+MAX_MESSAGE_BYTES = int(os.getenv("MAX_MESSAGE_BYTES", "1048576"))
+MAX_IDLE_SECONDS = int(os.getenv("MAX_IDLE_SECONDS", "120"))
+MAX_CONCURRENT_STREAMS = int(os.getenv("MAX_CONCURRENT_STREAMS", "100"))
+
+_active_stream_semaphore = asyncio.Semaphore(MAX_CONCURRENT_STREAMS)
+
+
+class PrometheusMetrics:
+    def __init__(self) -> None:
+        self._soniox_connection_attempts = 0
+        self._soniox_connection_failures = 0
+        self._stream_sessions_started = 0
+        self._stream_sessions_rejected = 0
+        self._transcript_segments_sent = 0
+        self._soniox_message_latency_seconds_sum = 0.0
+        self._soniox_message_latency_seconds_count = 0
+
+    def inc_connection_attempt(self) -> None:
+        self._soniox_connection_attempts += 1
+
+    def inc_connection_failure(self) -> None:
+        self._soniox_connection_failures += 1
+
+    def inc_stream_started(self) -> None:
+        self._stream_sessions_started += 1
+
+    def inc_stream_rejected(self) -> None:
+        self._stream_sessions_rejected += 1
+
+    def inc_segments_sent(self, count: int) -> None:
+        self._transcript_segments_sent += count
+
+    def observe_soniox_message_latency(self, seconds: float) -> None:
+        self._soniox_message_latency_seconds_sum += seconds
+        self._soniox_message_latency_seconds_count += 1
+
+    def render(self) -> str:
+        return "\n".join(
+            [
+                "# HELP soniox_connection_attempts_total Total Soniox connection attempts.",
+                "# TYPE soniox_connection_attempts_total counter",
+                f"soniox_connection_attempts_total {self._soniox_connection_attempts}",
+                "# HELP soniox_connection_failures_total Total Soniox connection failures.",
+                "# TYPE soniox_connection_failures_total counter",
+                f"soniox_connection_failures_total {self._soniox_connection_failures}",
+                "# HELP stream_sessions_started_total Total stream sessions accepted.",
+                "# TYPE stream_sessions_started_total counter",
+                f"stream_sessions_started_total {self._stream_sessions_started}",
+                "# HELP stream_sessions_rejected_total Total stream sessions rejected by safeguards.",
+                "# TYPE stream_sessions_rejected_total counter",
+                f"stream_sessions_rejected_total {self._stream_sessions_rejected}",
+                "# HELP transcript_segments_sent_total Total transcript segments emitted to Omi.",
+                "# TYPE transcript_segments_sent_total counter",
+                f"transcript_segments_sent_total {self._transcript_segments_sent}",
+                "# HELP soniox_message_latency_seconds Soniox message processing latency summary.",
+                "# TYPE soniox_message_latency_seconds summary",
+                (
+                    "soniox_message_latency_seconds_sum "
+                    f"{self._soniox_message_latency_seconds_sum}"
+                ),
+                (
+                    "soniox_message_latency_seconds_count "
+                    f"{self._soniox_message_latency_seconds_count}"
+                ),
+                "",
+            ]
+        )
+
+
+metrics = PrometheusMetrics()
+
+
+def _log_event(level: int, event: str, **fields: Any) -> None:
+    payload = {"event": event, **fields}
+    logger.log(level, json.dumps(payload, sort_keys=True))
 
 
 class AudioTranscoder:
@@ -121,6 +197,7 @@ async def connect_to_soniox() -> ClientConnection:
 
     delay = 1
     for attempt in range(1, MAX_CONNECT_RETRIES + 1):
+        metrics.inc_connection_attempt()
         try:
             ws = await connect(SONIOX_URL, ping_interval=20, ping_timeout=20)
             config: dict[str, Any] = {
@@ -137,10 +214,16 @@ async def connect_to_soniox() -> ClientConnection:
                 config["num_channels"] = 1
 
             await ws.send(json.dumps(config))
-            logger.info("Connected to Soniox on attempt %s", attempt)
+            _log_event(logging.INFO, "soniox_connect_success", attempt=attempt)
             return ws
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Soniox connect attempt %s failed: %s", attempt, exc)
+            metrics.inc_connection_failure()
+            _log_event(
+                logging.WARNING,
+                "soniox_connect_failure",
+                attempt=attempt,
+                error=str(exc),
+            )
             if attempt == MAX_CONNECT_RETRIES:
                 raise
             await asyncio.sleep(delay)
@@ -153,6 +236,7 @@ async def _send_segments_to_omi(omi_ws: WebSocket, segments: list[dict[str, Any]
     if not segments:
         return
     await omi_ws.send_json({"segments": segments})
+    metrics.inc_segments_sent(len(segments))
 
 
 async def _prepare_audio_for_soniox(payload: bytes) -> bytes:
@@ -166,29 +250,37 @@ app = FastAPI(title="Omi ↔ Soniox Real-Time STT Proxy")
 
 
 @app.get("/health")
-async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+async def health() -> PlainTextResponse:
+    return PlainTextResponse("ok")
+
+
+@app.get("/metrics")
+async def metrics_endpoint() -> PlainTextResponse:
+    return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
 
 @app.websocket("/stream")
 async def stream_proxy(omi_ws: WebSocket) -> None:
+    session_id = str(uuid.uuid4())
     await omi_ws.accept()
-    logger.info("Omi client connected")
+    _log_event(logging.INFO, "omi_client_connected", session_id=session_id)
 
     aggregator = TokenAggregator()
     soniox_ws: ClientConnection | None = None
     stop_event = asyncio.Event()
     last_audio_ts = time.monotonic()
+    last_omi_message_ts = time.monotonic()
+    slot_acquired = False
 
     async def forward_omi_to_soniox() -> None:
-        nonlocal last_audio_ts
+        nonlocal last_audio_ts, last_omi_message_ts
         assert soniox_ws is not None
 
         while not stop_event.is_set():
             try:
                 message = await omi_ws.receive()
             except WebSocketDisconnect:
-                logger.info("Omi disconnected")
+                _log_event(logging.INFO, "omi_disconnected", session_id=session_id)
                 stop_event.set()
                 break
 
@@ -196,8 +288,20 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
                 stop_event.set()
                 break
 
+            last_omi_message_ts = time.monotonic()
+
             if "bytes" in message and message["bytes"] is not None:
                 payload = message["bytes"]
+                if len(payload) > MAX_MESSAGE_BYTES:
+                    _log_event(
+                        logging.WARNING,
+                        "message_too_large",
+                        session_id=session_id,
+                        bytes=len(payload),
+                        max_bytes=MAX_MESSAGE_BYTES,
+                    )
+                    stop_event.set()
+                    break
                 if len(payload) <= 2:
                     # Omi heartbeat ping, do not forward as audio.
                     continue
@@ -213,11 +317,15 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
                 try:
                     obj = json.loads(raw)
                 except json.JSONDecodeError:
-                    logger.warning("Received non-JSON text from Omi: %s", raw)
+                    _log_event(
+                        logging.WARNING,
+                        "omi_non_json_text",
+                        session_id=session_id,
+                    )
                     continue
 
                 if obj.get("type") == "CloseStream":
-                    logger.info("Received CloseStream from Omi")
+                    _log_event(logging.INFO, "omi_close_stream", session_id=session_id)
                     await soniox_ws.send(json.dumps({"type": "finalize"}))
                     await soniox_ws.send(b"")
                     stop_event.set()
@@ -231,12 +339,20 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="ignore")
 
+                started = time.monotonic()
                 payload = json.loads(raw)
+                metrics.observe_soniox_message_latency(time.monotonic() - started)
 
                 if payload.get("error_code") is not None:
                     code = payload.get("error_code")
                     message = payload.get("error_message", "Unknown Soniox error")
-                    logger.error("Soniox error %s: %s", code, message)
+                    _log_event(
+                        logging.ERROR,
+                        "soniox_error",
+                        session_id=session_id,
+                        code=code,
+                        message=message,
+                    )
                     await omi_ws.send_json({"segments": []})
                     stop_event.set()
                     break
@@ -245,13 +361,13 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
                 await _send_segments_to_omi(omi_ws, segments)
 
                 if payload.get("finished") is True:
-                    logger.info("Soniox signaled finished")
+                    _log_event(logging.INFO, "soniox_finished", session_id=session_id)
                     trailing = aggregator.flush()
                     await _send_segments_to_omi(omi_ws, trailing)
                     stop_event.set()
                     break
         except ConnectionClosed:
-            logger.info("Soniox websocket closed")
+            _log_event(logging.INFO, "soniox_websocket_closed", session_id=session_id)
             stop_event.set()
 
     async def keepalive_loop() -> None:
@@ -262,19 +378,48 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
             silence_for = time.monotonic() - last_audio_ts
             if silence_for >= KEEPALIVE_INTERVAL_SECONDS:
                 await soniox_ws.send(json.dumps({"type": "keepalive"}))
-                logger.debug("Sent keepalive to Soniox after %.2fs silence", silence_for)
+                _log_event(
+                    logging.DEBUG,
+                    "keepalive_sent",
+                    session_id=session_id,
+                    silence_for_seconds=round(silence_for, 2),
+                )
                 last_audio_ts = time.monotonic()
 
+    async def idle_timeout_loop() -> None:
+        nonlocal last_omi_message_ts
+        while not stop_event.is_set():
+            await asyncio.sleep(1)
+            idle_for = time.monotonic() - last_omi_message_ts
+            if idle_for >= MAX_IDLE_SECONDS:
+                _log_event(
+                    logging.WARNING,
+                    "session_idle_timeout",
+                    session_id=session_id,
+                    idle_for_seconds=round(idle_for, 2),
+                    max_idle_seconds=MAX_IDLE_SECONDS,
+                )
+                stop_event.set()
+                break
+
     try:
+        if _active_stream_semaphore.locked():
+            metrics.inc_stream_rejected()
+            _log_event(logging.WARNING, "stream_rejected_capacity", session_id=session_id)
+            return
+        await _active_stream_semaphore.acquire()
+        slot_acquired = True
+        metrics.inc_stream_started()
         soniox_ws = await connect_to_soniox()
 
         forward_task = asyncio.create_task(forward_omi_to_soniox())
         reverse_task = asyncio.create_task(forward_soniox_to_omi())
         keepalive_task = asyncio.create_task(keepalive_loop())
+        idle_timeout_task = asyncio.create_task(idle_timeout_loop())
 
         await stop_event.wait()
 
-        for task in (forward_task, reverse_task, keepalive_task):
+        for task in (forward_task, reverse_task, keepalive_task, idle_timeout_task):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -282,11 +427,18 @@ async def stream_proxy(omi_ws: WebSocket) -> None:
         trailing = aggregator.flush()
         await _send_segments_to_omi(omi_ws, trailing)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Proxy session failed: %s", exc)
+        _log_event(
+            logging.ERROR,
+            "proxy_session_failed",
+            session_id=session_id,
+            error=str(exc),
+        )
     finally:
+        if slot_acquired:
+            _active_stream_semaphore.release()
         if soniox_ws is not None:
             with contextlib.suppress(Exception):
                 await soniox_ws.close()
         with contextlib.suppress(Exception):
             await omi_ws.close()
-        logger.info("Proxy session closed")
+        _log_event(logging.INFO, "proxy_session_closed", session_id=session_id)
