@@ -7,25 +7,11 @@ This document summarizes what remains unimplemented vs. the current proxy plan a
 - Keepalive interval is now configurable via `SONIOX_KEEPALIVE_INTERVAL_SECONDS` and clamped to Soniox's real-time keepalive limit (`<=20s`).
 - Aggregation now treats both `<end>` and `<fin>` as flush boundaries so manual finalization does not leak control tokens into transcript text.
 - `AUDIO_PASSTHROUGH=false` now decodes Omi audio to 16kHz mono PCM with ffmpeg before forwarding to Soniox.
+- Added protocol-level async bridge tests for `CloseStream` finalize/EOF, `finished=true` trailing flush, Soniox error shutdown payload, and keepalive behavior under silence.
 
 ## Remaining TODO items
 
-### 1) Missing protocol-level integration tests for WebSocket bridge behavior
-
-**Current state**
-- Unit tests cover only token aggregation.
-
-**Impact**
-- Regressions in stream lifecycle handling (disconnects, finalize, Soniox errors, keepalive cadence) can slip through.
-
-**What to implement**
-- Add async tests for:
-  - Omi `CloseStream` -> Soniox `finalize` + EOF handling.
-  - Soniox `finished=true` -> trailing flush and session close.
-  - Soniox error payload -> empty segment response and shutdown.
-  - Keepalive interval behavior under silence.
-
-### 2) Operational hardening still incomplete
+### 1) Operational hardening still incomplete
 
 **Current state**
 - Retry logic exists for Soniox connect and basic logging is present.
@@ -39,7 +25,7 @@ This document summarizes what remains unimplemented vs. the current proxy plan a
 - Add Prometheus-compatible metrics (connection attempts, failures, segment count, latency).
 - Add configurable per-connection and global safeguards (max idle time, max message size).
 
-### 3) Deployment and config docs can be expanded
+### 2) Deployment and config docs can be expanded
 
 **Current state**
 - README includes local/Docker/deploy basics.
