@@ -49,6 +49,7 @@ class TokenAggregator:
     def process_tokens(self, tokens: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Process a Soniox token batch and emit finalized segments."""
         segments: list[dict[str, Any]] = []
+        boundary_tokens = {"<end>", "<fin>"}
 
         for token in tokens:
             if token.get("is_final") is not True:
@@ -59,7 +60,7 @@ class TokenAggregator:
             start_ms = float(token.get("start_ms", 0.0))
             end_ms = float(token.get("end_ms", start_ms))
 
-            if text == "<end>":
+            if text in boundary_tokens:
                 flushed = self._flush_current()
                 if flushed is not None:
                     segments.append(flushed)

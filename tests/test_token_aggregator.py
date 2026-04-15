@@ -53,6 +53,19 @@ class TokenAggregatorTests(unittest.TestCase):
         self.assertEqual(len(segments), 1)
         self.assertEqual(segments[0]["text"], "bar")
 
+    def test_flushes_on_fin_token(self) -> None:
+        agg = TokenAggregator()
+        tokens = [
+            {"text": "Good", "start_ms": 0, "end_ms": 200, "is_final": True, "speaker": "1"},
+            {"text": "bye", "start_ms": 210, "end_ms": 400, "is_final": True, "speaker": "1"},
+            {"text": "<fin>", "start_ms": 401, "end_ms": 401, "is_final": True, "speaker": "1"},
+        ]
+
+        segments = agg.process_tokens(tokens)
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["text"], "Goodbye")
+
 
 if __name__ == "__main__":
     unittest.main()
