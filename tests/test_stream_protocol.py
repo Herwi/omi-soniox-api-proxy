@@ -301,6 +301,28 @@ class StreamProxyProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("soniox_connection_attempts_total", content)
         self.assertIn("transcript_segments_sent_total", content)
 
+    def test_get_int_env_invalid_value_uses_default(self) -> None:
+        old_environ = dict(server.os.environ)
+        try:
+            server.os.environ["MAX_IDLE_SECONDS"] = "not-an-int"
+            parsed = server._get_int_env("MAX_IDLE_SECONDS", 120, minimum=1)
+        finally:
+            server.os.environ.clear()
+            server.os.environ.update(old_environ)
+
+        self.assertEqual(parsed, 120)
+
+    def test_get_int_env_below_minimum_uses_default(self) -> None:
+        old_environ = dict(server.os.environ)
+        try:
+            server.os.environ["MAX_CONCURRENT_STREAMS"] = "0"
+            parsed = server._get_int_env("MAX_CONCURRENT_STREAMS", 100, minimum=1)
+        finally:
+            server.os.environ.clear()
+            server.os.environ.update(old_environ)
+
+        self.assertEqual(parsed, 100)
+
 
 if __name__ == "__main__":
     unittest.main()
