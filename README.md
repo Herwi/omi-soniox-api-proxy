@@ -72,6 +72,7 @@ curl http://localhost:8080/metrics
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SONIOX_API_KEY` | ✅ | — | Soniox API key used in the start/config message. |
+| `AUTH_BEARER_TOKEN` | ❌ | empty (disabled) | If set, `/stream` requires `Authorization: Bearer <token>` and rejects other clients. |
 | `PORT` | ❌ | `8080` | App listen port (used by your process manager). |
 | `LOG_LEVEL` | ❌ | `info` | Python logging verbosity. |
 | `SONIOX_MODEL` | ❌ | `stt-rt-v4` | Soniox model; fallback can be `stt-rt-v3`. |
@@ -84,10 +85,6 @@ curl http://localhost:8080/metrics
 | `MAX_CONCURRENT_STREAMS` | ❌ | `100` | Global cap on simultaneously active `/stream` sessions. Sessions over the cap are rejected. |
 
 > Note: `AUDIO_PASSTHROUGH=false` requires `ffmpeg` in `PATH`. Incoming Omi audio is transcoded to 16kHz mono PCM (`pcm_s16le`) before forwarding to Soniox.
-
-## Implementation status and remaining TODO
-
-See [`TODO_REVIEW.md`](TODO_REVIEW.md) for a prioritized review of planned work that is still pending.
 
 ## Running with Docker
 
@@ -107,6 +104,17 @@ docker compose up --build -d
 ```
 
 `docker-compose.yml` passes `SONIOX_API_KEY` (and other runtime variables) into the container through the `environment` section, so your VPS only needs a populated `.env` file (or exported shell variables) before `docker compose up`.
+
+## Securing access to your self-hosted proxy
+
+For private self-hosting, set `AUTH_BEARER_TOKEN` in your environment (or `.env` for Compose).  
+When enabled, every WebSocket request to `/stream` must include:
+
+```text
+Authorization: Bearer <your-token>
+```
+
+Connections without a matching bearer token are rejected by the proxy.
 
 ## Deploying
 
@@ -131,6 +139,11 @@ In Omi custom STT backend settings, point your WebSocket URL to:
 ```text
 wss://<your-domain>/stream
 ```
+
+If you enabled `AUTH_BEARER_TOKEN`, also configure Omi's custom header fields:
+
+- Header name: `Authorization`
+- Header value: `Bearer <the same token from AUTH_BEARER_TOKEN>`
 
 Expected behavior:
 
